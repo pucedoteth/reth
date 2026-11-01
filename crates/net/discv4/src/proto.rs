@@ -398,7 +398,7 @@ impl Decodable for EnrRequest {
 ///
 /// This packet is used to respond to an `ENRRequest` packet and includes the requested ENR along
 /// with the hash of the original request.
-#[derive(Clone, Debug, Eq, PartialEq, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Debug, Eq, PartialEq, RlpEncodable)]
 pub struct EnrResponse {
     /// The hash of the `ENRRequest` packet being replied to.
     pub request_hash: B256,
@@ -415,6 +415,19 @@ impl EnrResponse {
     pub fn eth_fork_id(&self) -> Option<ForkId> {
         let mut maybe_fork_id = self.enr.get_raw_rlp(b"eth")?;
         EnrForkIdEntry::decode(&mut maybe_fork_id).ok().map(Into::into)
+    }
+}
+
+impl Decodable for EnrResponse {
+    // Manual implementation to satisfy EIP-8: additional list elements are ignored.
+    //
+    // See https://eips.ethereum.org/EIPS/eip-8
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        Ok(Self {
+            request_hash: Decodable::decode(&mut payload)?,
+            enr: Decodable::decode(&mut payload)?,
+        })
     }
 }
 
@@ -1078,6 +1091,25 @@ mod tests {
                 },
             ];
             assert_matches!(decoded.msg, Message::Neighbours(Neighbours { nodes, expire: 1136239445 }) if nodes == expected_nodes);
+        }
+
+        // checks that junk data at the end of the packet is discarded according to eip-8
+        #[test]
+        fn eip8_decode_enr_response() {
+            let key = SecretKey::new(&mut rand_08::rngs::OsRng);
+            let enr = Enr::builder().build(&key).unwrap();
+            let request_hash = B256::random();
+            let junk: u64 = 112233;
+
+            let mut buf = Vec::new();
+            let payload_length = request_hash.length() + enr.length() + junk.length();
+            alloy_rlp::Header { list: true, payload_length }.encode(&mut buf);
+            request_hash.encode(&mut buf);
+            enr.encode(&mut buf);
+            junk.encode(&mut buf);
+
+            let decoded = EnrResponse::decode(&mut buf.as_slice()).unwrap();
+            assert_eq!(decoded, EnrResponse { request_hash, enr });
         }
     }
 }
